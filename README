@@ -21,7 +21,7 @@ SYNOPSIS
 
         $p = Net::Ping->new("tcp", 2);
         # Try connecting to the www port instead of the echo port
-        $p->{port_num} = getservbyname("http", "tcp");
+        $p->port_number(getservbyname("http", "tcp"));
         while ($stop_time > time())
         {
             print "$host not reachable ", scalar(localtime()), "\n"
@@ -32,7 +32,7 @@ SYNOPSIS
 
         # Like tcp protocol, but with many hosts
         $p = Net::Ping->new("syn");
-        $p->{port_num} = getservbyname("http", "tcp");
+        $p->port_number(getservbyname("http", "tcp"));
         foreach $host (@host_array) {
           $p->ping($host);
         }
@@ -234,6 +234,14 @@ DESCRIPTION
         connection is also closed by "undef $p". The network connection is
         automatically closed if the ping object goes out of scope (e.g. $p
         is local to a subroutine and you leave the subroutine).
+
+    $p->port_number([$port_number])
+        When called with a port number, the port number used to ping is set
+        to $port_number rather than using the echo port. It also has the
+        effect of calling "$p->service_check(1)" causing a ping to return a
+        successful response only if that specific port is accessible. This
+        function returns the value of the port that "ping()" will connect
+        to.
 
     pingecho($host [, $timeout]);
         To provide backward compatibility with the previous version of
