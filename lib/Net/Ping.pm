@@ -1374,6 +1374,8 @@ sub close
     delete $self->{"syn"};
   } elsif ($self->{"proto"} eq "tcp") {
     # The connection will already be closed
+  } elsif ($self->{"proto"} eq "external") {
+    # Nothing to close
   } else {
     $self->{"fh"}->close();
   }
