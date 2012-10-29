@@ -5,11 +5,12 @@ require Exporter;
 
 use strict;
 use vars qw(@ISA @EXPORT $VERSION
-            $def_timeout $def_proto $def_factor
+            $def_timeout $def_proto $def_factor $def_family
             $max_datasize $pingstring $hires $source_verify $syn_forking);
 use Fcntl qw( F_GETFL F_SETFL O_NONBLOCK );
-use Socket qw( SOCK_DGRAM SOCK_STREAM SOCK_RAW PF_INET SOL_SOCKET SO_ERROR IPPROTO_IP IP_TOS IP_TTL
-               inet_aton getnameinfo NI_NUMERICHOST sockaddr_in );
+use Socket qw( SOCK_DGRAM SOCK_STREAM SOCK_RAW AF_INET PF_INET IPPROTO_TCP SOL_SOCKET SO_ERROR
+               IPPROTO_IP IP_TOS IP_TTL
+               inet_ntoa inet_aton getnameinfo NI_NUMERICHOST sockaddr_in );
 use POSIX qw( ENOTCONN ECONNREFUSED ECONNRESET EINPROGRESS EWOULDBLOCK EAGAIN WNOHANG );
 use FileHandle;
 use Carp;
@@ -17,18 +18,26 @@ use Time::HiRes;
 
 @ISA = qw(Exporter);
 @EXPORT = qw(pingecho);
-$VERSION = "2.43";
+$VERSION = "2.44";
 
 # Constants
+
+my $AF_INET6 = eval { Socket::AF_INET6() };
+my $AF_UNSPEC = eval { Socket::AF_UNSPEC() };
+my $AI_NUMERICHOST = eval { Socket::AI_NUMERICHOST() };
+my $NI_NUMERICHOST = eval { Socket::NI_NUMERICHOST() };
 
 $def_timeout = 5;           # Default timeout to wait for a reply
 $def_proto = "tcp";         # Default protocol to use for pinging
 $def_factor = 1.2;          # Default exponential backoff rate.
+$def_family = AF_INET;      # Default family.
 $max_datasize = 1024;       # Maximum data bytes in a packet
 # The data we exchange with the server for the stream protocol
 $pingstring = "pingschwingping!\n";
 $source_verify = 1;         # Default is to verify source endpoint
 $syn_forking = 0;
+my $qr_family = qr/^(?:(?:(:?ip)?v?(?:4|6))|${\AF_INET}|$AF_INET6)$/;
+my $qr_family4 = qr/^(?:(?:(:?ip)?v?4)|${\AF_INET})$/;
 
 if ($^O =~ /Win32/i) {
   # Hack to avoid this Win32 spewage:
@@ -86,6 +95,7 @@ sub new
       $device,            # Optional device to use
       $tos,               # Optional ToS to set
       $ttl,               # Optional TTL to set
+      $family             # Optional address family (AF_INET)
       ) = @_;
   my  $class = ref($this) || $this;
   my  $self = {};
@@ -113,6 +123,20 @@ sub new
     croak('TTL must be from 0 to 255')
       if ($ttl && ($ttl < 0 || $ttl > 255));
     $self->{"ttl"} = $ttl;
+  }
+
+  if ($family) {
+    if ($family =~ $qr_family) {
+      if ($family =~ $qr_family4) {
+        $self->{"family"} = AF_INET;
+      } else {
+        $self->{"family"} = $AF_INET6;
+      }
+    } else {
+      croak('Family must be "ipv4" or "ipv6"')
+    }
+  } else {
+    $self->{"family"} = $def_family;
   }
 
   $min_datasize = ($proto eq "udp") ? 1 : 0;  # Determine data size
@@ -207,9 +231,8 @@ sub new
 }
 
 # Description: Set the local IP address from which pings will be sent.
-# For ICMP and UDP pings, this calls bind() on the already-opened socket;
-# for TCP pings, just saves the address to be used when the socket is
-# opened.  Returns non-zero if successful; croaks on error.
+# For ICMP, UDP and TCP pings, just saves the address to be used when 
+# the socket is opened.  Returns non-zero if successful; croaks on error.
 sub bind
 {
   my ($self,
@@ -222,16 +245,14 @@ sub bind
   croak("already bound") if defined($self->{"local_addr"}) &&
     ($self->{"proto"} eq "udp" || $self->{"proto"} eq "icmp");
 
-  $ip = inet_aton($local_addr);
+  $ip = $self->_resolv($local_addr);
   croak("nonexistent local address $local_addr") unless defined($ip);
-  $self->{"local_addr"} = $ip; # Only used if proto is tcp
+  $self->{"local_addr"} = $ip;
 
-  if ($self->{"proto"} eq "udp" || $self->{"proto"} eq "icmp")
-  {
-  CORE::bind($self->{"fh"}, sockaddr_in(0, $ip)) ||
-    croak("$self->{'proto'} bind error - $!");
-  }
-  elsif (($self->{"proto"} ne "tcp") && ($self->{"proto"} ne "syn"))
+  if (($self->{"proto"} ne "udp") && 
+      ($self->{"proto"} ne "icmp") && 
+      ($self->{"proto"} ne "tcp") && 
+      ($self->{"proto"} ne "syn"))
   {
     croak("Unknown protocol \"$self->{proto}\" in bind()");
   }
@@ -360,17 +381,32 @@ sub ping
   my ($self,
       $host,              # Name or IP number of host to ping
       $timeout,           # Seconds after which ping times out
+      $family,            # Address family
       ) = @_;
   my ($ip,                # Packed IP number of $host
       $ret,               # The return value
       $ping_time,         # When ping began
       );
 
-  croak("Usage: \$p->ping(\$host [, \$timeout])") unless @_ == 2 || @_ == 3;
+  croak("Usage: \$p->ping(\$host [, \$timeout [, \$family]])") unless @_ == 2 || @_ == 3 || @_ == 4;
   $timeout = $self->{"timeout"} unless $timeout;
   croak("Timeout must be greater than 0 seconds") if $timeout <= 0;
 
-  $ip = inet_aton($host);
+  if ($family) {
+    if ($family =~ $qr_family) {
+      if ($family =~ $qr_family4) {
+        $self->{"family_local"} = AF_INET;
+      } else {
+        $self->{"family_local"} = $AF_INET6;
+      }
+    } else {
+      croak('Family must be "ipv4" or "ipv6"')
+    }
+  } else {
+    $self->{"family_local"} = $self->{"family"};
+  }
+  
+  $ip = $self->_resolv($host);
   return () unless defined($ip);      # Does host exist?
 
   # Dispatch to the appropriate routine.
@@ -412,8 +448,11 @@ sub ping_external {
 }
 
 use constant ICMP_ECHOREPLY   => 0; # ICMP packet types
+use constant ICMPv6_ECHOREPLY => 129; # ICMP packet types
 use constant ICMP_UNREACHABLE => 3; # ICMP packet types
+use constant ICMPv6_UNREACHABLE => 1; # ICMP packet types
 use constant ICMP_ECHO        => 8;
+use constant ICMPv6_ECHO      => 128;
 use constant ICMP_TIME_EXCEEDED => 11; # ICMP packet types
 use constant ICMP_PARAMETER_PROBLEM => 12; # ICMP packet types
 use constant ICMP_STRUCT      => "C2 n3 A"; # Structure of a minimal ICMP packet
@@ -449,15 +488,45 @@ sub ping_icmp
       $from_msg           # ICMP message
       );
 
+  socket($self->{"fh"}, $ip->{"family"}, SOCK_RAW, $self->{"proto_num"}) ||
+    croak("icmp socket error - $!");
+
+  if (defined $self->{"local_addr"} &&
+      !CORE::bind($self->{"fh"}, _pack_sockaddr_in(0, $self->{"local_addr"}))) {
+    croak("icmp bind error - $!");
+  }
+
+  if ($self->{'device'}) {
+    setsockopt($self->{"fh"}, SOL_SOCKET, SO_BINDTODEVICE(), pack("Z*", $self->{'device'}))
+      or croak "error binding to device $self->{'device'} $!";
+  }
+  if ($self->{'tos'}) {
+    setsockopt($self->{"fh"}, IPPROTO_IP, IP_TOS(), pack("I*", $self->{'tos'}))
+      or croak "error configuring tos to $self->{'tos'} $!";
+  }
+
   $self->{"seq"} = ($self->{"seq"} + 1) % 65536; # Increment sequence
   $checksum = 0;                          # No checksum for starters
-  $msg = pack(ICMP_STRUCT . $self->{"data_size"}, ICMP_ECHO, SUBCODE,
-              $checksum, $self->{"pid"}, $self->{"seq"}, $self->{"data"});
+  if ($ip->{"family"} == AF_INET) {
+    $msg = pack(ICMP_STRUCT . $self->{"data_size"}, ICMP_ECHO, SUBCODE,
+                $checksum, $self->{"pid"}, $self->{"seq"}, $self->{"data"});
+  } else {
+                                          # how to get SRC
+    my $pseudo_header = pack('a16a16Nnn', $ip->{"addr_in"}, $ip->{"addr_in"}, 8+length($self->{"data"}), "\0", 0x003a);
+    $msg = pack(ICMP_STRUCT . $self->{"data_size"}, ICMPv6_ECHO, SUBCODE,
+                $checksum, $self->{"pid"}, $self->{"seq"}, $self->{"data"});
+    $msg = $pseudo_header.$msg
+  }
   $checksum = Net::Ping->checksum($msg);
-  $msg = pack(ICMP_STRUCT . $self->{"data_size"}, ICMP_ECHO, SUBCODE,
-              $checksum, $self->{"pid"}, $self->{"seq"}, $self->{"data"});
+  if ($ip->{"family"} == AF_INET) {
+    $msg = pack(ICMP_STRUCT . $self->{"data_size"}, ICMP_ECHO, SUBCODE,
+                $checksum, $self->{"pid"}, $self->{"seq"}, $self->{"data"});
+  } else {
+    $msg = pack(ICMP_STRUCT . $self->{"data_size"}, ICMPv6_ECHO, SUBCODE,
+                $checksum, $self->{"pid"}, $self->{"seq"}, $self->{"data"});
+  }
   $len_msg = length($msg);
-  $saddr = sockaddr_in(ICMP_PORT, $ip);
+  $saddr = _pack_sockaddr_in(ICMP_PORT, $ip);
   $self->{"from_ip"} = undef;
   $self->{"from_type"} = undef;
   $self->{"from_subcode"} = undef;
@@ -483,9 +552,12 @@ sub ping_icmp
       $from_pid = -1;
       $from_seq = -1;
       $from_saddr = recv($self->{"fh"}, $recv_msg, 1500, ICMP_FLAGS);
-      ($from_port, $from_ip) = sockaddr_in($from_saddr);
+      ($from_port, $from_ip) = _unpack_sockaddr_in($from_saddr);
       ($from_type, $from_subcode) = unpack("C2", substr($recv_msg, 20, 2));
       if ($from_type == ICMP_ECHOREPLY) {
+        ($from_pid, $from_seq) = unpack("n3", substr($recv_msg, 24, 4))
+          if length $recv_msg >= 28;
+      } elsif ($from_type == ICMPv6_ECHOREPLY) {
         ($from_pid, $from_seq) = unpack("n3", substr($recv_msg, 24, 4))
           if length $recv_msg >= 28;
       } else {
@@ -498,10 +570,10 @@ sub ping_icmp
       next if ($from_pid != $self->{"pid"});
       next if ($from_seq != $self->{"seq"});
       if (! $source_verify || ($self->ntop($from_ip) eq $self->ntop($ip))) { # Does the packet check out?
-        if ($from_type == ICMP_ECHOREPLY) {
+        if (($from_type == ICMP_ECHOREPLY) || ($from_type == ICMPv6_ECHOREPLY)) {
           $ret = 1;
-	        $done = 1;
-        } elsif ($from_type == ICMP_UNREACHABLE) {
+          $done = 1;
+        } elsif (($from_type == ICMP_UNREACHABLE) || ($from_type == ICMPv6_UNREACHABLE)) {
           $done = 1;
         } elsif ($from_type == ICMP_TIME_EXCEEDED) {
           $ret = 0;
@@ -586,15 +658,15 @@ sub tcp_connect
       ) = @_;
   my ($saddr);            # Packed IP and Port
 
-  $saddr = sockaddr_in($self->{"port_num"}, $ip);
+  $saddr = _pack_sockaddr_in($self->{"port_num"}, $ip);
 
   my $ret = 0;            # Default to unreachable
 
   my $do_socket = sub {
-    socket($self->{"fh"}, PF_INET, SOCK_STREAM, $self->{"proto_num"}) ||
+    socket($self->{"fh"}, $ip->{"family"}, SOCK_STREAM, $self->{"proto_num"}) ||
       croak("tcp socket error - $!");
     if (defined $self->{"local_addr"} &&
-        !CORE::bind($self->{"fh"}, sockaddr_in(0, $self->{"local_addr"}))) {
+        !CORE::bind($self->{"fh"}, _pack_sockaddr_in(0, $self->{"local_addr"}))) {
       croak("tcp bind error - $!");
     }
     if ($self->{'device'}) {
@@ -607,7 +679,7 @@ sub tcp_connect
     }
   };
   my $do_connect = sub {
-    $self->{"ip"} = $ip;
+    $self->{"ip"} = $ip->{"addr_in"};
     # ECONNREFUSED is 10061 on MSWin32. If we pass it as child error through $?,
     # we'll get (10061 & 255) = 77, so we cannot check it in the parent process.
     return ($ret = connect($self->{"fh"}, $saddr) || ($! == ECONNREFUSED && !$self->{"econnrefused"}));
@@ -683,7 +755,7 @@ sub tcp_connect
 
     # Unset O_NONBLOCK property on filehandle
     $self->socket_blocking_mode($self->{"fh"}, 1);
-    $self->{"ip"} = $ip;
+    $self->{"ip"} = $ip->{"addr_in"};
     return $ret;
   };
 
@@ -847,7 +919,7 @@ sub ping_stream
   }
 
   croak "tried to switch servers while stream pinging"
-    if $self->{"ip"} ne $ip;
+    if $self->{"ip"} ne $ip->{"addr_in"};
 
   return $self->tcp_echo($timeout, $pingstring);
 }
@@ -859,11 +931,26 @@ sub open
 {
   my ($self,
       $host,              # Host or IP address
-      $timeout            # Seconds after which open times out
+      $timeout,           # Seconds after which open times out
+      $family
       ) = @_;
 
+  if ($family) {
+    if ($family =~ $qr_family) {
+      if ($family =~ $qr_family4) {
+        $self->{"family_local"} = AF_INET;
+      } else {
+        $self->{"family_local"} = $AF_INET6;
+      }
+    } else {
+      croak('Family must be "ipv4" or "ipv6"')
+    }
+  } else {
+    $self->{"family_local"} = $self->{"family"};
+  }
+
   my ($ip);               # Packed IP number of the host
-  $ip = inet_aton($host);
+  $ip = $self->_resolv($host);
   $timeout = $self->{"timeout"} unless $timeout;
 
   if($self->{"proto"} eq "stream") {
@@ -906,9 +993,27 @@ sub ping_udp
       $from_ip            # Packed IP number of sender
       );
 
-  $saddr = sockaddr_in($self->{"port_num"}, $ip);
+  $saddr = _pack_sockaddr_in($self->{"port_num"}, $ip);
   $self->{"seq"} = ($self->{"seq"} + 1) % 256;    # Increment sequence
   $msg = chr($self->{"seq"}) . $self->{"data"};   # Add data if any
+
+  socket($self->{"fh"}, $ip->{"family"}, SOCK_DGRAM,
+         $self->{"proto_num"}) ||
+           croak("udp socket error - $!");
+
+  if (defined $self->{"local_addr"} &&
+      !CORE::bind($self->{"fh"}, _pack_sockaddr_in(0, $self->{"local_addr"}))) {
+    croak("udp bind error - $!");
+  }
+
+  if ($self->{'device'}) {
+    setsockopt($self->{"fh"}, SOL_SOCKET, SO_BINDTODEVICE(), pack("Z*", $self->{'device'}))
+      or croak "error binding to device $self->{'device'} $!";
+  }
+  if ($self->{'tos'}) {
+    setsockopt($self->{"fh"}, IPPROTO_IP, IP_TOS(), pack("I*", $self->{'tos'}))
+      or croak "error configuring tos to $self->{'tos'} $!";
+  }
 
   if ($self->{"connected"}) {
     if ($self->{"connected"} ne $saddr) {
@@ -930,7 +1035,7 @@ sub ping_udp
   if ($flush) {
     # Need to socket() again to flush the descriptor
     # This will disconnect from the old saddr.
-    socket($self->{"fh"}, PF_INET, SOCK_DGRAM,
+    socket($self->{"fh"}, $ip->{"family"}, SOCK_DGRAM,
            $self->{"proto_num"});
   }
   # Connect the socket if it isn't already connected
@@ -979,7 +1084,7 @@ sub ping_udp
         }
         $done = 1;
       } else {
-        ($from_port, $from_ip) = sockaddr_in($from_saddr);
+        ($from_port, $from_ip) = _unpack_sockaddr_in($from_saddr, $ip->{"family"});
         if (!$source_verify ||
             (($from_ip eq $ip) &&        # Does the packet check out?
              ($from_port == $self->{"port_num"}) &&
@@ -1029,15 +1134,15 @@ sub ping_syn
   }
 
   my $fh = FileHandle->new();
-  my $saddr = sockaddr_in($self->{"port_num"}, $ip);
+  my $saddr = _pack_sockaddr_in($self->{"port_num"}, $ip);
 
   # Create TCP socket
-  if (!socket ($fh, PF_INET, SOCK_STREAM, $self->{"proto_num"})) {
+  if (!socket ($fh, $ip->{"family"}, SOCK_STREAM, $self->{"proto_num"})) {
     croak("tcp socket error - $!");
   }
 
   if (defined $self->{"local_addr"} &&
-      !CORE::bind($fh, sockaddr_in(0, $self->{"local_addr"}))) {
+      !CORE::bind($fh, _pack_sockaddr_in(0, $self->{"local_addr"}))) {
     croak("tcp bind error - $!");
   }
 
@@ -1098,15 +1203,15 @@ sub ping_syn_fork {
       }
     } else {
       # Child process
-      my $saddr = sockaddr_in($self->{"port_num"}, $ip);
+      my $saddr = _pack_sockaddr_in($self->{"port_num"}, $ip);
 
       # Create TCP socket
-      if (!socket ($self->{"fh"}, PF_INET, SOCK_STREAM, $self->{"proto_num"})) {
+      if (!socket ($self->{"fh"}, $ip->{"family"}, SOCK_STREAM, $self->{"proto_num"})) {
         croak("tcp socket error - $!");
       }
 
       if (defined $self->{"local_addr"} &&
-          !CORE::bind($self->{"fh"}, sockaddr_in(0, $self->{"local_addr"}))) {
+          !CORE::bind($self->{"fh"}, _pack_sockaddr_in(0, $self->{"local_addr"}))) {
         croak("tcp bind error - $!");
       }
 
@@ -1417,6 +1522,186 @@ sub ntop {
     return $address;
 }
 
+########################################################
+# DNS hostname resolution
+# return:
+#   $h->{name}    = host - as passed in
+#   $h->{host}    = host - as passed in without :port
+#   $h->{port}    = OPTIONAL - if :port, then value of port
+#   $h->{addr}    = resolved numeric address
+#   $h->{addr_in} = aton/pton result
+#   $h->{family}  = AF_INET/6
+############################
+sub _resolv {
+  my ($self,
+      $name,
+      ) = @_;
+
+  my %h;
+  $h{name} = $name;
+  my $family = $self->{"family"};
+
+  if (defined($self->{"family_local"})) {
+    $family = $self->{"family_local"}
+  }
+
+# START - host:port
+  my $cnt = 0;
+
+  # Count ":"
+  $cnt++ while ($name =~ m/:/g);
+
+  # 0 = hostname or IPv4 address
+  if ($cnt == 0) {
+    $h{host} = $name
+  # 1 = IPv4 address with port
+  } elsif ($cnt == 1) {
+    ($h{host}, $h{port}) = split /:/, $name
+  # >=2 = IPv6 address
+  } elsif ($cnt >= 2) {
+    #IPv6 with port - [2001::1]:port
+    if ($name =~ /^\[.*\]:\d{1,5}$/) {
+      ($h{host}, $h{port}) = split /:([^:]+)$/, $name # split after last :
+    # IPv6 without port
+    } else {
+      $h{host} = $name
+    }
+  }
+
+  # Clean up host
+  $h{host} =~ s/\[//g;
+  $h{host} =~ s/\]//g;
+  # Clean up port
+  if (defined($h{port}) && (($h{port} !~ /^\d{1,5}$/) || ($h{port} < 1) || ($h{port} > 65535))) {
+    croak("Invalid port `$h{port}' in `$name'");
+  }
+# END - host:port
+
+  # address check
+  # new way
+  if ($Socket::VERSION >= 1.94) {
+    my %hints = (
+      family   => $AF_UNSPEC,
+      protocol => IPPROTO_TCP,
+      flags => $AI_NUMERICHOST
+    );
+
+    # numeric address, return
+    my ($err, @getaddr) = Socket::getaddrinfo($h{host}, undef, \%hints);
+    if (defined($getaddr[0])) {
+      $h{addr} = $h{host};
+      $h{family} = $getaddr[0]->{family};
+      if ($h{family} == AF_INET) {
+        (undef, $h{addr_in}, undef, undef) = Socket::unpack_sockaddr_in $getaddr[0]->{addr};
+      } else {
+        (undef, $h{addr_in}, undef, undef) = Socket::unpack_sockaddr_in6 $getaddr[0]->{addr};
+      }
+      return \%h
+    }
+  # old way
+  } else {
+    # numeric address, return
+    my $ret = gethostbyname($h{host});
+    if (defined($ret) && (_inet_ntoa($ret) eq $h{host})) {
+      $h{addr} = $h{host};
+      $h{addr_in} = $ret;
+      $h{family} = AF_INET;
+      return \%h
+    }
+  }
+
+  # resolve
+  # new way
+  if ($Socket::VERSION >= 1.94) {
+    my %hints = (
+      family   => $family,
+      protocol => IPPROTO_TCP
+    );
+
+    my ($err, @getaddr) = Socket::getaddrinfo($h{host}, undef, \%hints);
+    if (defined($getaddr[0])) {
+      my ($err, $address) = Socket::getnameinfo($getaddr[0]->{addr}, $NI_NUMERICHOST);
+      if (defined($address)) {
+        $h{addr} = $address;
+        $h{addr} =~ s/\%(.)*$//; # remove %ifID if IPv6
+        $h{family} = $getaddr[0]->{family};
+        if ($h{family} == AF_INET) {
+          (undef, $h{addr_in}, undef, undef) = Socket::unpack_sockaddr_in $getaddr[0]->{addr};
+        } else {
+          (undef, $h{addr_in}, undef, undef) = Socket::unpack_sockaddr_in6 $getaddr[0]->{addr};
+        }
+        return \%h
+      } else {
+        croak("getnameinfo($getaddr[0]->{addr}) failed - $err");
+      }
+    } else {
+      my $error = sprintf "getaddrinfo($h{host},,%s) failed - $err",
+                  ($family == AF_INET) ? "AF_INET" : "AF_INET6";
+      croak("$error");
+    }
+  # old way
+  } else {
+    if ($family == $AF_INET6) {
+      croak("Socket >= 1.94 required for IPv6 - found Socket $Socket::VERSION");
+    }
+
+    my @gethost = gethostbyname($h{host});
+    if (defined($gethost[4])) {
+      $h{addr} = inet_ntoa($gethost[4]);
+      $h{addr_in} = $gethost[4];
+      $h{family} = AF_INET;
+      return \%h
+    } else {
+      croak("gethostbyname($h{host}) failed - $^E");
+    }
+  }
+}
+
+sub _pack_sockaddr_in {
+  my ($port,
+      $addr,
+      ) = @_;
+
+  if ($addr->{"family"} == AF_INET) {
+    return Socket::pack_sockaddr_in($port, $addr->{"addr_in"});
+  } else {
+    return Socket::pack_sockaddr_in6($port, $addr->{"addr_in"});
+  }
+}
+
+sub _unpack_sockaddr_in {
+  my ($addr,
+      $family,
+      ) = @_;
+
+  my ($port, $host);
+  if ($family == AF_INET) {
+    ($port, $host) = Socket::unpack_sockaddr_in($addr);
+  } else {
+    ($port, $host) = Socket::unpack_sockaddr_in6($addr);
+  }
+  return $port, $host
+}
+
+sub _inet_ntoa {
+  my ($addr
+      ) = @_;
+
+  my $ret;
+  if ($Socket::VERSION >= 1.94) {
+    my ($err, $address) = Socket::getnameinfo($addr, $NI_NUMERICHOST);
+    if (defined($address)) {
+      $ret = $address;
+    } else {
+      croak("getnameinfo($addr) failed - $err");
+    }
+  } else {
+    $ret = inet_ntoa($addr)
+  }
+    
+  return $ret
+}
+
 1;
 __END__
 
@@ -1538,7 +1823,7 @@ This protocol does not require any special privileges.
 
 =over 4
 
-=item Net::Ping->new([$proto [, $def_timeout [, $bytes [, $device [, $tos [, $ttl ]]]]]]);
+=item Net::Ping->new([$proto [, $def_timeout [, $bytes [, $device [, $tos [, $ttl [, $family ]]]]]]]);
 
 Create a new ping object.  All of the parameters are optional.  $proto
 specifies the protocol to use when doing a ping.  The current choices
@@ -1564,7 +1849,31 @@ If $tos is given, this ToS is configured into the socket.
 
 For icmp, $ttl can be specified to set the TTL of the outgoing packet.
 
-=item $p->ping($host [, $timeout]);
+=over 4
+
+Valid $family values for IPv4:
+
+=over 4
+
+4, v4, ip4, ipv4, AF_INET (constant)
+
+=back
+
+=back
+
+=over 4
+
+Valid values for IPv6:
+
+=over 4
+
+6, v6, ip6, ipv6, AF_INET6 (constant)
+
+=back
+
+=back
+
+=item $p->ping($host [, $timeout [, $family]]);
 
 Ping the remote host and wait for a response.  $host can be either the
 hostname or the IP number of the remote host.  The optional timeout
