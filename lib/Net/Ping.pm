@@ -1419,7 +1419,7 @@ Net::Ping - check a remote host for reachability
 
     $p = Net::Ping->new("tcp", 2);
     # Try connecting to the www port instead of the echo port
-    $p->port_number(getservbyname("http", "tcp"));
+    $p->port_number(scalar(getservbyname("http", "tcp")));
     while ($stop_time > time())
     {
         print "$host not reachable ", scalar(localtime()), "\n"
