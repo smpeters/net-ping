@@ -1,6 +1,13 @@
 CHANGES
 -------
 
+2.39  Mar 13 09:25 2013
+        - patch from Matthew Musgrove to resolve RT #45812.  Thanks!
+        - pulled in several changes from the Perl core
+
+2.36  Jun 08 12:00 2009
+        - release to include a few fixes from the Perl core
+
 2.35  Feb 08 14:42 2008
 	- Patch in Perl change #33242 by Nicholas Clark 
 		<http://public.activestate.com/cgi-bin/perlbrowse/p/33242>
