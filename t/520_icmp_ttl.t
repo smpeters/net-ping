@@ -18,8 +18,7 @@ SKIP: {
     and !IsAdminUser())
   or ($^O eq 'VMS'
       and (`write sys\$output f\$privilege("SYSPRV")` =~ m/FALSE/));
-  my $p = new Net::Ping "icmp";
-    my $p = new Net::Ping ("icmp",undef,undef,undef,undef,undef);
+  my $p = new Net::Ping ("icmp",undef,undef,undef,undef,undef);
   isa_ok($p, 'Net::Ping');
   ok $p->ping("127.0.0.1");
   $p->close();
