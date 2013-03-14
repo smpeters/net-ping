@@ -9,7 +9,7 @@ use vars qw(@ISA @EXPORT $VERSION
             $max_datasize $pingstring $hires $source_verify $syn_forking);
 use Fcntl qw( F_GETFL F_SETFL O_NONBLOCK );
 use Socket qw( SOCK_DGRAM SOCK_STREAM SOCK_RAW PF_INET SOL_SOCKET SO_ERROR IPPROTO_IP IP_TOS IP_TTL
-               inet_aton inet_ntoa sockaddr_in );
+               inet_aton inet_ntop AF_INET sockaddr_in );
 use POSIX qw( ENOTCONN ECONNREFUSED ECONNRESET EINPROGRESS EWOULDBLOCK EAGAIN WNOHANG );
 use FileHandle;
 use Carp;
@@ -400,7 +400,7 @@ sub ping
     croak("Unknown protocol \"$self->{proto}\" in ping()");
   }
 
-  return wantarray ? ($ret, &time() - $ping_time, inet_ntoa($ip)) : $ret;
+  return wantarray ? ($ret, &time() - $ping_time, inet_ntop(AF_INET, $ip)) : $ret;
 }
 
 # Uses Net::Ping::External to do an external ping.
@@ -501,7 +501,7 @@ sub ping_icmp
       $self->{"from_subcode"} = $from_subcode;
       next if ($from_pid != $self->{"pid"});
       next if ($from_seq != $self->{"seq"});
-      if (! $source_verify || (inet_ntoa($from_ip) eq inet_ntoa($ip))) { # Does the packet check out?
+      if (! $source_verify || (inet_ntop(AF_INET, $from_ip) eq inet_ntop(AF_INET, $ip))) { # Does the packet check out?
         if ($from_type == ICMP_ECHOREPLY) {
           $ret = 1;
 	        $done = 1;
@@ -523,7 +523,7 @@ sub icmp_result {
   my ($self) = @_;
   my $ip = $self->{"from_ip"} || "";
   $ip = "\0\0\0\0" unless 4 == length $ip;
-  return (inet_ntoa($ip),($self->{"from_type"} || 0), ($self->{"from_subcode"} || 0));
+  return (inet_ntop(AF_INET, $ip),($self->{"from_type"} || 0), ($self->{"from_subcode"} || 0));
 }
 
 # Description:  Do a checksum on the message.  Basically sum all of
@@ -1260,7 +1260,7 @@ sub ack
           }
           # Everything passed okay, return the answer
           return wantarray ?
-            ($entry->[0], &time() - $entry->[3], inet_ntoa($entry->[1]))
+            ($entry->[0], &time() - $entry->[3], inet_ntop(AF_INET, $entry->[1]))
             : $entry->[0];
         } else {
           warn "Corrupted SYN entry: unknown fd [$fd] ready!";
@@ -1296,7 +1296,7 @@ sub ack_unfork {
     # Host passed as arg
     if (my $entry = $self->{"good"}->{$host}) {
       delete $self->{"good"}->{$host};
-      return ($entry->[0], &time() - $entry->[3], inet_ntoa($entry->[1]));
+      return ($entry->[0], &time() - $entry->[3], inet_ntop(AF_INET, $entry->[1]));
     }
   }
 
@@ -1340,7 +1340,7 @@ sub ack_unfork {
               # And wait for the next winner
               next;
             }
-            return ($entry->[0], &time() - $entry->[3], inet_ntoa($entry->[1]));
+            return ($entry->[0], &time() - $entry->[3], inet_ntop(AF_INET, $entry->[1]));
           }
         } else {
           # Should never happen
