@@ -84,6 +84,7 @@ sub new
       $data_size,         # Optional additional bytes of data
       $device,            # Optional device to use
       $tos,               # Optional ToS to set
+      $ttl,               # Optional TTL to set
       ) = @_;
   my  $class = ref($this) || $this;
   my  $self = {};
@@ -106,6 +107,12 @@ sub new
   $self->{"device"} = $device;
 
   $self->{"tos"} = $tos;
+
+  if ($self->{"proto"} eq 'icmp') {
+    croak('TTL must be from 0 to 255')
+      if ($ttl && ($ttl < 0 || $ttl > 255));
+    $self->{"ttl"} = $ttl;
+  }
 
   $min_datasize = ($proto eq "udp") ? 1 : 0;  # Determine data size
   $data_size = $min_datasize unless defined($data_size) && $proto ne "tcp";
@@ -160,6 +167,10 @@ sub new
     if ($self->{'tos'}) {
       setsockopt($self->{"fh"}, IPPROTO_IP, IP_TOS, pack("I*", $self->{'tos'}))
         or croak "error configuring tos to $self->{'tos'} $!";
+    }
+    if ($self->{'ttl'}) {
+      setsockopt($self->{"fh"}, IPPROTO_IP, IP_TTL, pack("I*", $self->{'ttl'}))
+        or croak "error configuring ttl to $self->{'ttl'} $!";
     }
   }
   elsif ($self->{"proto"} eq "tcp" || $self->{"proto"} eq "stream")
@@ -407,6 +418,8 @@ sub ping_external {
 use constant ICMP_ECHOREPLY   => 0; # ICMP packet types
 use constant ICMP_UNREACHABLE => 3; # ICMP packet types
 use constant ICMP_ECHO        => 8;
+use constant ICMP_TIME_EXCEEDED => 11; # ICMP packet types
+use constant ICMP_PARAMETER_PROBLEM => 12; # ICMP packet types
 use constant ICMP_STRUCT      => "C2 n3 A"; # Structure of a minimal ICMP packet
 use constant SUBCODE          => 0; # No ICMP subcode for ECHO and ECHOREPLY
 use constant ICMP_FLAGS       => 0; # No special flags for send or recv
@@ -486,13 +499,16 @@ sub ping_icmp
       $self->{"from_ip"} = $from_ip;
       $self->{"from_type"} = $from_type;
       $self->{"from_subcode"} = $from_subcode;
-      if (($from_pid == $self->{"pid"}) && # Does the packet check out?
-          (! $source_verify || (inet_ntoa($from_ip) eq inet_ntoa($ip))) &&
-          ($from_seq == $self->{"seq"})) {
+      next if ($from_pid != $self->{"pid"});
+      next if ($from_seq != $self->{"seq"});
+      if (! $source_verify || (inet_ntoa($from_ip) eq inet_ntoa($ip))) { # Does the packet check out?
         if ($from_type == ICMP_ECHOREPLY) {
           $ret = 1;
-	  $done = 1;
+	        $done = 1;
         } elsif ($from_type == ICMP_UNREACHABLE) {
+          $done = 1;
+        } elsif ($from_type == ICMP_TIME_EXCEEDED) {
+          $ret = 0;
           $done = 1;
         }
       }
@@ -1508,7 +1524,7 @@ This protocol does not require any special privileges.
 
 =over 4
 
-=item Net::Ping->new([$proto [, $def_timeout [, $bytes [, $device [, $tos ]]]]]);
+=item Net::Ping->new([$proto [, $def_timeout [, $bytes [, $device [, $tos [, $ttl ]]]]]]);
 
 Create a new ping object.  All of the parameters are optional.  $proto
 specifies the protocol to use when doing a ping.  The current choices
@@ -1531,6 +1547,8 @@ before sending the ping packet.  I believe this only works with
 superuser privileges and with udp and icmp protocols at this time.
 
 If $tos is given, this ToS is configured into the socket.
+
+For icmp, $ttl can be specified to set the TTL of the outgoing packet.
 
 =item $p->ping($host [, $timeout]);
 
