@@ -9,8 +9,9 @@ WriteMakefile(
     ABSTRACT_FROM       => 'lib/Net/Ping.pm',
     PL_FILES            => {},
     PREREQ_PM => {
-        'Test::More' => 0,
-        'Socket'     => 2.007,
+        'Socket'      => 2.007,
+        'Test::More'  => 0,
+        'Time::HiRes' => 0,
     },
     INSTALLDIRS		=> 'perl',
     dist                => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
