@@ -14,7 +14,7 @@ repo at https://github.com/smpeters/net-ping is a good place to start.
 
 To build and install, just incant the typical mantra:
 
-   perl Makefile.PL
-   make
-   make test
-   make install
+    perl Makefile.PL
+    make
+    make test
+    make install
