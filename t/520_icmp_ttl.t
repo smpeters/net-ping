@@ -8,29 +8,27 @@ BEGIN {
   }
 }
 
-use Test;
-use Net::Ping;
-plan tests => 8;
+use Test::More qw(no_plan);
+BEGIN {use_ok('Net::Ping')};
 
-# Everything loaded fine
-ok 1;
-
-if (($> and $^O ne 'VMS')
-    or (($^O eq 'MSWin32' or $^O eq 'cygwin')
-        and !IsAdminUser())
-    or ($^O eq 'VMS'
-        and (`write sys\$output f\$privilege("SYSPRV")` =~ m/FALSE/))) {
-  skip "icmp ping requires root privileges.", 1;
-} else {
-  my $p = new Net::Ping ("icmp",undef,undef,undef,undef,undef);
+SKIP: {
+  skip "icmp ping requires root privileges.", 1
+    if ($> and $^O ne 'VMS' and $^O ne 'cygwin')
+      or (($^O eq 'MSWin32' or $^O eq 'cygwin')
+    and !IsAdminUser())
+  or ($^O eq 'VMS'
+      and (`write sys\$output f\$privilege("SYSPRV")` =~ m/FALSE/));
+  my $p = new Net::Ping "icmp";
+    my $p = new Net::Ping ("icmp",undef,undef,undef,undef,undef);
+  isa_ok($p, 'Net::Ping');
   ok $p->ping("127.0.0.1");
   $p->close();
   $p = new Net::Ping ("icmp",undef,undef,undef,undef,0);
   ok $p->ping("127.0.0.1");
   $p->close();
   $p = undef();
-  $p = eval 'new Net::Ping ("icmp",undef,undef,undef,undef,1)';
-  ok(defined($p));
+  $p = new Net::Ping ("icmp",undef,undef,undef,undef,1);
+  isa_ok($p, 'Net::Ping');
   $p = undef();
   $p = eval 'new Net::Ping ("icmp",undef,undef,undef,undef,-1)';
   ok(!defined($p));
@@ -40,13 +38,6 @@ if (($> and $^O ne 'VMS')
   $p = new Net::Ping ("icmp",undef,undef,undef,undef,10);
   ok $p->ping("127.0.0.1");
   $p->close();
-  $p = new Net::Ping ("icmp",undef,undef,undef,undef,64);
-  my $pr = $p->ping("www.cpan.org");
-  $q = new Net::Ping ("icmp",undef,undef,undef,undef,1);
-  my $qr = $q->ping("www.cpan.org");
-  skip (!$pr, !$qr);
-  $p->close();
-  $q->close();
 }
 
 sub IsAdminUser {
