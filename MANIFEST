@@ -21,4 +21,5 @@ t/410_syn_host.t
 t/450_service.t
 t/500_ping_icmp.t
 t/510_ping_udp.t
+t/520_icmp_ttl.t
 META.yml                                 Module meta-data (added by MakeMaker)
