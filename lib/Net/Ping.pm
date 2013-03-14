@@ -8,7 +8,7 @@ use vars qw(@ISA @EXPORT $VERSION
             $def_timeout $def_proto $def_factor
             $max_datasize $pingstring $hires $source_verify $syn_forking);
 use Fcntl qw( F_GETFL F_SETFL O_NONBLOCK );
-use Socket qw( SOCK_DGRAM SOCK_STREAM SOCK_RAW PF_INET SOL_SOCKET SO_ERROR
+use Socket qw( SOCK_DGRAM SOCK_STREAM SOCK_RAW PF_INET SOL_SOCKET SO_ERROR IPPROTO_IP IP_TOS IP_TTL
                inet_aton inet_ntoa sockaddr_in );
 use POSIX qw( ENOTCONN ECONNREFUSED ECONNRESET EINPROGRESS EWOULDBLOCK EAGAIN WNOHANG );
 use FileHandle;
@@ -17,9 +17,6 @@ use Carp;
 @ISA = qw(Exporter);
 @EXPORT = qw(pingecho);
 $VERSION = "2.39";
-
-sub SOL_IP { 0; };
-sub IP_TOS { 1; };
 
 # Constants
 
@@ -143,7 +140,7 @@ sub new
         or croak "error binding to device $self->{'device'} $!";
     }
     if ($self->{'tos'}) {
-      setsockopt($self->{"fh"}, SOL_IP, IP_TOS(), pack("I*", $self->{'tos'}))
+      setsockopt($self->{"fh"}, IPPROTO_IP, IP_TOS, pack("I*", $self->{'tos'}))
         or croak "error configuring tos to $self->{'tos'} $!";
     }
   }
@@ -161,7 +158,7 @@ sub new
         or croak "error binding to device $self->{'device'} $!";
     }
     if ($self->{'tos'}) {
-      setsockopt($self->{"fh"}, SOL_IP, IP_TOS(), pack("I*", $self->{'tos'}))
+      setsockopt($self->{"fh"}, IPPROTO_IP, IP_TOS, pack("I*", $self->{'tos'}))
         or croak "error configuring tos to $self->{'tos'} $!";
     }
   }
@@ -593,7 +590,7 @@ sub tcp_connect
         or croak("error binding to device $self->{'device'} $!");
     }
     if ($self->{'tos'}) {
-      setsockopt($self->{"fh"}, SOL_IP, IP_TOS(), pack("I*", $self->{'tos'}))
+      setsockopt($self->{"fh"}, IPPROTO_IP, IP_TOS, pack("I*", $self->{'tos'}))
         or croak "error configuring tos to $self->{'tos'} $!";
     }
   };
@@ -1037,7 +1034,7 @@ sub ping_syn
       or croak("error binding to device $self->{'device'} $!");
   }
   if ($self->{'tos'}) {
-    setsockopt($fh, SOL_IP, IP_TOS(), pack("I*", $self->{'tos'}))
+    setsockopt($fh, IPPROTO_IP, IP_TOS, pack("I*", $self->{'tos'}))
       or croak "error configuring tos to $self->{'tos'} $!";
   }
   # Set O_NONBLOCK property on filehandle
@@ -1106,7 +1103,7 @@ sub ping_syn_fork {
           or croak("error binding to device $self->{'device'} $!");
       }
       if ($self->{'tos'}) {
-        setsockopt($self->{"fh"}, SOL_IP, IP_TOS(), pack("I*", $self->{'tos'}))
+        setsockopt($self->{"fh"}, IPPROTO_IP, IP_TOS, pack("I*", $self->{'tos'}))
           or croak "error configuring tos to $self->{'tos'} $!";
       }
 
