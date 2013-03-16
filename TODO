@@ -16,12 +16,6 @@ to be in order in the code.
 It's time.  They need to be added to the module and to the tests.  I'll start with warnings
 across the board, cleanup as needed, then work on strict.
 
-- HiRes time by default?
-I think this is preferable.  I've already made Time::HiRes a prereq.  The code assumed users
-had it in the hires() method, but I'm guessing that almost every installation had it since it has
-been included in the Perl core since at least Perl 5.8.0.  Also, integer time is just not 
-fine-grained enough for most uses.
-
 - POD rewriting
 Some things, such as the return from $p->ping(), are cryptic.  The location of the
 source is off as well.

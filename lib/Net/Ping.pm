@@ -13,6 +13,7 @@ use Socket qw( SOCK_DGRAM SOCK_STREAM SOCK_RAW PF_INET SOL_SOCKET SO_ERROR IPPRO
 use POSIX qw( ENOTCONN ECONNREFUSED ECONNRESET EINPROGRESS EWOULDBLOCK EAGAIN WNOHANG );
 use FileHandle;
 use Carp;
+use Time::HiRes;
 
 @ISA = qw(Exporter);
 @EXPORT = qw(pingecho);
@@ -312,13 +313,12 @@ sub retrans
 # Description: allows the module to use milliseconds as returned by
 # the Time::HiRes module
 
-$hires = 0;
+$hires = 1;
 sub hires
 {
   my $self = shift;
   $hires = 1 unless defined
     ($hires = ((defined $self) && (ref $self)) ? shift() : $self);
-  require Time::HiRes if $hires;
 }
 
 sub time
