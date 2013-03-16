@@ -73,7 +73,7 @@ isa_ok($p, 'Net::Ping', 'new() worked');
 
 # Change to use the more common web port.
 # (Make sure getservbyname works in scalar context.)
-cmp_ok(($p->port_number(scalar(getservbyname("http", "tcp")))), '>', 0, 'valid port');
+cmp_ok(($p->{port_num} = getservbyname("http", "tcp")), '>', 0, 'vaid port');
 
 foreach my $host (keys %webs) {
   # ping() does dns resolution and
