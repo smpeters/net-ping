@@ -14,6 +14,7 @@ WriteMakefile(
         'Time::HiRes' => 0,
     },
     INSTALLDIRS		=> 'perl',
-    dist                => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
-    clean               => { FILES => 'Net-Ping-*' },
+    dist            => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
+    clean           => { FILES => 'Net-Ping-*' },
+    test            => { TESTS => 't/*.t t/zz_legacy/*.t', },
 );

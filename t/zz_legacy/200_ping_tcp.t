@@ -40,7 +40,7 @@ isnt($p->ping("localhost"), 0, 'Test on the default port');
 # Change to use the more common web port.
 # This will pull from /etc/services on UNIX.
 # (Make sure getservbyname works in scalar context.)
-isnt($p->{port_num} = (getservbyname("http", "tcp") || 80), undef);
+isnt($p->port_number(scalar(getservbyname("http", "tcp")) || 80), undef);
 
 isnt($p->ping("localhost"), 0, 'Test localhost on the web port');
 

@@ -1,4 +1,3 @@
-# Same as 400_ping_syn.t but testing ack( $host ) instead of ack( ).
 use strict;
 
 BEGIN {
@@ -47,7 +46,6 @@ BEGIN {
   "www.yahoo.com." => 1,
   "www.about.com." => 1,
   "www.microsoft.com." => 1,
-  "127.0.0.1" => 1,
 );
 }
 
@@ -73,7 +71,7 @@ isa_ok($p, 'Net::Ping', 'new() worked');
 
 # Change to use the more common web port.
 # (Make sure getservbyname works in scalar context.)
-cmp_ok(($p->{port_num} = getservbyname("http", "tcp")), '>', 0, 'vaid port');
+cmp_ok(($p->port_number(scalar(getservbyname("http", "tcp")))), '>', 0, 'valid port');
 
 foreach my $host (keys %webs) {
   # ping() does dns resolution and
@@ -83,15 +81,12 @@ foreach my $host (keys %webs) {
 }
 
 Alarm(20);
-foreach my $host (sort keys %webs) {
-  my $on = $p->ack($host);
-  if ($on) {
-    is($webs{$host}, 1, "supposed to be up: http://$host/ [" . ($p->{bad}->{$host} || "") . "]");
-  } else {   
-    is($webs{$host}, 0, "supposed to be down: http://$host/ [" . ($p->{bad}->{$host} || "") . "]");
-  }
+while (my $host = $p->ack()) {
+  is($webs{$host}, 1, "supposed to be up: http://$host/");
   delete $webs{$host};
-  Alarm(20);
 }
 
 Alarm(0);
+foreach my $host (keys %webs) {
+  is($webs{$host}, 0, "supposed to be down: http://$host/ [" . ($p->{bad}->{$host} || "") . "]");
+}
