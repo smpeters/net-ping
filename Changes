@@ -1,5 +1,13 @@
 CHANGES
 -------
+2.41  Mar 17 09:35 2013
+        Bugfixes
+        - Windows Vista does not appear to support inet_ntop().  It seems to
+          have InetNtop() instead.  So, working around by using getnameinfo()
+          and passing in the NI_NUMERICHOST to get an IP address.
+        Features
+        - Change Net::Ping to use Time::HiRes::time() instead of CORE::time()
+          by default.  For most successful cases, CORE::time() returned zero. 
 2.40  Mar 15 11:20 2013
         Bugfixes
         - several fixes to tests to stop the black smoke on Win32's 
@@ -20,7 +28,7 @@ CHANGES
           applications to be built with Net::Ping.  Thanks to 
           <rolek@bokxing.nl> for the patch and tests!
 
-        Internals
+       Internals
         - replaced SOL_IP with IPPROTO_IP.  SOL_IP is not portable and was 
           hard-coded anyway.
         - added IPPROTO_IP, IP_TOS, IP_TTL, and AF_INET to the list of Socket 

@@ -21,4 +21,4 @@ requires:
   Socket: 2.007
   Test::More: 0
   Time::HiRes: 0
-version: 2.40
+version: 2.41
