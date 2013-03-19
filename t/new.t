@@ -29,10 +29,32 @@ eval {
     $p = Net::Ping->new("udp", 10, -1);
 };
 like($@, qr/Data for ping must be from/, "new() errors for invalid data size");
-diag $p->{"data_size"};
 
 eval {
     $p = Net::Ping->new("udp", 10, 1025);
 };
 like($@, qr/Data for ping must be from/, "new() errors for invalid data size");
-diag $p->{"data_size"};
+
+# force failures for udp
+
+
+# force failures for tcp
+SKIP: {
+    diag "Checking icmp";
+    eval { $p = Net::Ping->new('icmp'); };
+    if($> and $^O ne 'VMS' and $^O ne 'cygwin') {
+        like($@, qr/icmp ping requires root privilege/, "Need root for icmp");
+        skip "icmp tests require root", 2;
+    } else {
+        isa_ok($p, "Net::Ping");
+    }
+    
+    # set IP TOS to "Minimum Delay"
+    $p = Net::Ping->new("icmp", undef, undef, undef, 8);
+    isa_ok($p, "Net::Ping");
+
+    # This really shouldn't work.  Not sure who to blame.
+    $p = Net::Ping->new("icmp", undef, undef, undef, "does this fail"); 
+    isa_ok($p, "Net::Ping");
+}
+
