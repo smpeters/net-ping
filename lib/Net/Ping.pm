@@ -202,10 +202,6 @@ sub new
     $self->{"syn"} = {};
     $self->{"stop_time"} = 0;
   }
-  elsif ($self->{"proto"} eq "external")
-  {
-    # No preliminary work needs to be done.
-  }
 
   return($self);
 }
