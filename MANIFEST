@@ -8,6 +8,7 @@ META.json
 META.yml			Module meta-data (added by MakeMaker)
 README.md
 t/00-load.t
+t/external.t
 t/pod.t
 t/zz_legacy/100_load.t
 t/zz_legacy/110_icmp_inst.t
