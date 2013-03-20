@@ -515,15 +515,6 @@ sub ping_icmp
   return $ret;
 }
 
-=pod
-sub icmp_result {
-  my ($self) = @_;
-  my $ip = $self->{"from_ip"} || "";
-  $ip = "\0\0\0\0" unless 4 == length $ip;
-  return ($self->ntop($ip),($self->{"from_type"} || 0), ($self->{"from_subcode"} || 0));
-}
-=cut
-
 # Description:  Do a checksum on the message.  Basically sum all of
 # the short words and fold the high order bits into the low order bits.
 
