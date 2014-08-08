@@ -367,7 +367,7 @@ sub ping
       );
 
   croak("Usage: \$p->ping(\$host [, \$timeout])") unless @_ == 2 || @_ == 3;
-  $timeout = $self->{"timeout"} unless $timeout;
+  $timeout = $self->{"timeout"} unless defined $timeout;
   croak("Timeout must be greater than 0 seconds") if $timeout <= 0;
 
   $ip = inet_aton($host);
