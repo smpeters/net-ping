@@ -1,18 +1,23 @@
 CHANGES
 -------
-2.44  Mar 17 09:35 2013
-        version in cperl since 5.22.2c
+2.50  Sat Apr 16 11:50:20 2016 +0200 (rurban)
+       version in cperl since 5.22.2c
 
        Features
        - Handle IPv6 addresses and the AF_INET6 family.
        - Added the optional family argument to most methods.
          valid values: 6, "v6", "ip6", "ipv6", AF_INET6
+       - new can take now named arguments, a hashref.
+       - Added the following named arguments to new:
+         gateway host bind retrans pingstring source_verify econnrefused
+       - Added the wakeonlan method
 
        Internals
        - $ip is now a hash with {addr, addr_in, family} not the addr_in packed IP.
        - added _resolv replacing inet_aton,
          _pack_sockaddr_in and _unpack_sockaddr_in replacing sockaddr_in,
          _inet_ntoa replacing inet_ntoa
+       - added several new tests (Steve Peters)
 
 2.43  Mon Apr 29 00:23:56 2013 -0300
         version in perl core since 5.19.9

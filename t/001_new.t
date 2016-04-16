@@ -12,11 +12,15 @@ isa_ok($p, "Net::Ping");
 my $p2 = $p->new();
 isa_ok($p2, "Net::Ping");
 
+# named args
+my $p3 = Net::Ping->new({proto => 'tcp', ttl => 5});
+isa_ok($p3, "Net::Ping");
+
 # check for invalid proto
 eval {
     $p = Net::Ping->new("thwackkk");
 };
-like($@, qr/Protocol for ping must be "icmp", "udp", "tcp", "syn", "stream", or "external"/, "new() errors for invalid protocol");
+like($@, qr/Protocol for ping must be "icmp", "icmpv6", "udp", "tcp", "syn", "stream" or "external"/, "new() errors for invalid protocol");
 
 # check for invalid timeout
 eval {
@@ -48,13 +52,13 @@ SKIP: {
     } else {
         isa_ok($p, "Net::Ping");
     }
-    
+
     # set IP TOS to "Minimum Delay"
     $p = Net::Ping->new("icmp", undef, undef, undef, 8);
     isa_ok($p, "Net::Ping");
 
     # This really shouldn't work.  Not sure who to blame.
-    $p = Net::Ping->new("icmp", undef, undef, undef, "does this fail"); 
+    $p = Net::Ping->new("icmp", undef, undef, undef, "does this fail");
     isa_ok($p, "Net::Ping");
 }
 

@@ -4,12 +4,12 @@ require 5.002;
 require Exporter;
 
 use strict;
-use vars qw(@ISA @EXPORT $VERSION
+use vars qw(@ISA @EXPORT @EXPORT_OK $VERSION
             $def_timeout $def_proto $def_factor $def_family
             $max_datasize $pingstring $hires $source_verify $syn_forking);
 use Fcntl qw( F_GETFL F_SETFL O_NONBLOCK );
 use Socket qw( SOCK_DGRAM SOCK_STREAM SOCK_RAW AF_INET PF_INET IPPROTO_TCP
-	       SOL_SOCKET SO_ERROR
+	       SOL_SOCKET SO_ERROR SO_BROADCAST
                IPPROTO_IP IP_TOS IP_TTL
                inet_ntoa inet_aton getnameinfo NI_NUMERICHOST sockaddr_in );
 use POSIX qw( ENOTCONN ECONNREFUSED ECONNRESET EINPROGRESS EWOULDBLOCK EAGAIN
@@ -20,7 +20,8 @@ use Time::HiRes;
 
 @ISA = qw(Exporter);
 @EXPORT = qw(pingecho);
-$VERSION = "2.44";
+@EXPORT_OK = qw(wakeonlan);
+$VERSION = "2.50";
 
 # Globals
 
@@ -40,6 +41,8 @@ my $AF_INET6  = eval { Socket::AF_INET6() };
 my $AF_UNSPEC = eval { Socket::AF_UNSPEC() };
 my $AI_NUMERICHOST = eval { Socket::AI_NUMERICHOST() };
 my $NI_NUMERICHOST = eval { Socket::NI_NUMERICHOST() };
+my $IPPROTO_IPV6   = eval { Socket::IPPROTO_IPV6() };
+#my $IPV6_HOPLIMIT  = eval { Socket::IPV6_HOPLIMIT() };  # ping6 -h 0-255
 my $qr_family = qr/^(?:(?:(:?ip)?v?(?:4|6))|${\AF_INET}|$AF_INET6)$/;
 my $qr_family4 = qr/^(?:(?:(:?ip)?v?4)|${\AF_INET})$/;
 
@@ -62,10 +65,6 @@ if ($^O =~ /Win32/i) {
   }
 #  $syn_forking = 1;    # XXX possibly useful in < Win2K ?
 };
-
-# h2ph "asm/socket.h"
-# require "asm/socket.ph";
-sub SO_BINDTODEVICE () { 25 }
 
 # Description:  The pingecho() subroutine is provided for backward
 # compatibility with the original Net::Ping.  It accepts a host
@@ -99,7 +98,7 @@ sub new
       $device,            # Optional device to use
       $tos,               # Optional ToS to set
       $ttl,               # Optional TTL to set
-      $family             # Optional address family (AF_INET)
+      $family,            # Optional address family (AF_INET)
       ) = @_;
   my  $class = ref($this) || $this;
   my  $self = {};
@@ -108,10 +107,29 @@ sub new
       );
 
   bless($self, $class);
+  if (ref $proto eq 'HASH') { # support named args
+    for my $k (qw(proto timeout data_size device tos ttl family
+                  gateway host bind retrans pingstring source_verify
+                  econnrefused
+                  IPV6_USE_MIN_MTU IPV6_RECVPATHMTU IPV6_HOPLIMIT))
+    {
+      if (exists $proto->{$k}) {
+        $self->{$k} = $proto->{$k};
+        # some are still globals
+        if ($k eq 'pingstring') { $pingstring = $proto->{$k} }
+        if ($k eq 'source_verify') { $source_verify = $proto->{$k} }
+        delete $proto->{$k};
+      }
+    }
+    if (%$proto) {
+      croak("Invalid named argument: ",join(" ",keys (%$proto)));
+    }
+    $proto = $self->{'proto'};
+  }
 
   $proto = $def_proto unless $proto;          # Determine the protocol
-  croak('Protocol for ping must be "icmp", "udp", "tcp", "syn", "stream", or "external"')
-    unless $proto =~ m/^(icmp|udp|tcp|syn|stream|external)$/;
+  croak('Protocol for ping must be "icmp", "icmpv6", "udp", "tcp", "syn", "stream" or "external"')
+    unless $proto =~ m/^(icmp|icmpv6|udp|tcp|syn|stream|external)$/;
   $self->{"proto"} = $proto;
 
   $timeout = $def_timeout unless $timeout;    # Determine the timeout
@@ -123,10 +141,27 @@ sub new
 
   $self->{"tos"} = $tos;
 
-  if ($self->{"proto"} eq 'icmp') {
+  if ($self->{'host'}) {
+    my $host = $self->{'host'};
+    my $ip = _resolv($host)
+      or croak("could not resolve host $host");
+    $self->{host} = $ip;
+    $self->{family} = $ip->{family};
+  }
+
+  if ($self->{bind}) {
+    my $addr = $self->{bind};
+    my $ip = _resolv($addr)
+      or croak("could not resolve local addr $addr");
+    $self->{local_addr} = $ip;
+  } else {
+    $self->{local_addr} = undef;              # Don't bind by default
+  }
+
+  if ($self->{proto} eq 'icmp') {
     croak('TTL must be from 0 to 255')
       if ($ttl && ($ttl < 0 || $ttl > 255));
-    $self->{"ttl"} = $ttl;
+    $self->{ttl} = $ttl;
   }
 
   if ($family) {
@@ -156,9 +191,10 @@ sub new
     $self->{"data"} .= chr($cnt % 256);
   }
 
-  $self->{"local_addr"} = undef;              # Don't bind by default
-  $self->{"retrans"} = $def_factor;           # Default exponential backoff rate
-  $self->{"econnrefused"} = undef;            # Default Connection refused behavior
+  # Default exponential backoff rate
+  $self->{"retrans"} = $def_factor unless exists $self->{"retrans"};
+  # Default Connection refused behavior
+  $self->{"econnrefused"} = undef unless exists $self->{"econnrefused"};
 
   $self->{"seq"} = 0;                         # For counting packets
   if ($self->{"proto"} eq "udp")              # Open a socket
@@ -199,6 +235,57 @@ sub new
     }
     if ($self->{'ttl'}) {
       setsockopt($self->{"fh"}, IPPROTO_IP, IP_TTL, pack("I*", $self->{'ttl'}))
+        or croak "error configuring ttl to $self->{'ttl'} $!";
+    }
+  }
+  elsif ($self->{"proto"} eq "icmpv6")
+  {
+    croak("icmpv6 ping requires root privilege") if ($> and $^O ne 'VMS' and $^O ne 'cygwin');
+    croak("Wrong family $self->{family} for icmpv6 protocol")
+      if $self->{"family"} and $self->{"family"} != $AF_INET6;
+    $self->{"family"} = $AF_INET6;
+    $self->{"proto_num"} = eval { (getprotobyname('ipv6-icmp'))[2] } ||
+      croak("Can't get ipv6-icmp protocol by name"); # 58
+    $self->{"pid"} = $$ & 0xffff;           # Save lower 16 bits of pid
+    $self->{"fh"} = FileHandle->new();
+    socket($self->{"fh"}, $AF_INET6, SOCK_RAW, $self->{"proto_num"}) ||
+      croak("icmp socket error - $!");
+    if ($self->{'device'}) {
+      setsockopt($self->{"fh"}, SOL_SOCKET, SO_BINDTODEVICE(), pack("Z*", $self->{'device'}))
+        or croak "error binding to device $self->{'device'} $!";
+    }
+    if ($self->{'gateway'}) {
+      my $g = $self->{gateway};
+      my $ip = _resolv($g)
+        or croak("nonexistent gateway $g");
+      $self->{family} eq $AF_INET6
+        or croak("gateway requires the AF_INET6 family");
+      $ip->{family} eq $AF_INET6
+        or croak("gateway address needs to be IPv6");
+      my $IPV6_NEXTHOP = eval { Socket::IPV6_NEXTHOP() } || 48; # IPV6_3542NEXTHOP, or 21
+      setsockopt($self->{"fh"}, $IPPROTO_IPV6, $IPV6_NEXTHOP, _pack_sockaddr_in($ip))
+        or croak "error configuring gateway to $g NEXTHOP $!";
+    }
+    if (exists $self->{IPV6_USE_MIN_MTU}) {
+      my $IPV6_USE_MIN_MTU = eval { Socket::IPV6_USE_MIN_MTU() } || 42;
+      setsockopt($self->{"fh"}, $IPPROTO_IPV6, $IPV6_USE_MIN_MTU,
+                 pack("I*", $self->{'IPV6_USE_MIN_MT'}))
+        or croak "error configuring IPV6_USE_MIN_MT} $!";
+    }
+    if (exists $self->{IPV6_RECVPATHMTU}) {
+      my $IPV6_RECVPATHMTU = eval { Socket::IPV6_RECVPATHMTU() } || 43;
+      setsockopt($self->{"fh"}, $IPPROTO_IPV6, $IPV6_RECVPATHMTU,
+                 pack("I*", $self->{'RECVPATHMTU'}))
+        or croak "error configuring IPV6_RECVPATHMTU $!";
+    }
+    if ($self->{'tos'}) {
+      my $proto = $self->{family} == AF_INET ? IPPROTO_IP : $IPPROTO_IPV6;
+      setsockopt($self->{"fh"}, $proto, IP_TOS, pack("I*", $self->{'tos'}))
+        or croak "error configuring tos to $self->{'tos'} $!";
+    }
+    if ($self->{'ttl'}) {
+      my $proto = $self->{family} == AF_INET ? IPPROTO_IP : $IPPROTO_IPV6;
+      setsockopt($self->{"fh"}, $proto, IP_TTL, pack("I*", $self->{'ttl'}))
         or croak "error configuring ttl to $self->{'ttl'} $!";
     }
   }
@@ -332,6 +419,87 @@ sub retrans
   $self->{"retrans"} = shift;
 }
 
+sub _isroot {
+  if (($> and $^O ne 'VMS' and $^O ne 'cygwin')
+    or (($^O eq 'MSWin32' or $^O eq 'cygwin')
+        and !IsAdminUser())
+    or ($^O eq 'VMS'
+        and (`write sys\$output f\$privilege("SYSPRV")` =~ m/FALSE/))) {
+      return 0;
+  }
+  else {
+    return 1;
+  }
+}
+
+# Description: Sets ipv6 reachability
+# REACHCONF was removed in RFC3542, ping6 -R supports it. requires root.
+
+sub IPV6_REACHCONF
+{
+  my $self = shift;
+  my $on = shift;
+  if ($on) {
+    my $reachconf = eval { Socket::IPV6_REACHCONF() };
+    if (!$reachconf) {
+      carp "IPV6_REACHCONF not supported on this platform";
+      return 0;
+    }
+    if (!_isroot()) {
+      carp "IPV6_REACHCONF requires root permissions";
+      return 0;
+    }
+    $self->{"IPV6_REACHCONF"} = 1;
+  }
+  else {
+    return $self->{"IPV6_REACHCONF"};
+  }
+}
+
+# Description: set it on or off.
+
+sub IPV6_USE_MIN_MTU
+{
+  my $self = shift;
+  my $on = shift;
+  if (defined $on) {
+    my $IPV6_USE_MIN_MTU = eval { Socket::IPV6_USE_MIN_MTU() } || 43;
+    #if (!$IPV6_USE_MIN_MTU) {
+    #  carp "IPV6_USE_MIN_MTU not supported on this platform";
+    #  return 0;
+    #}
+    $self->{"IPV6_USE_MIN_MTU"} = $on ? 1 : 0;
+    setsockopt($self->{"fh"}, $IPPROTO_IPV6, $IPV6_USE_MIN_MTU,
+               pack("I*", $self->{'IPV6_USE_MIN_MT'}))
+      or croak "error configuring IPV6_USE_MIN_MT} $!";
+  }
+  else {
+    return $self->{"IPV6_USE_MIN_MTU"};
+  }
+}
+
+# Description: notify an according MTU
+
+sub IPV6_RECVPATHMTU
+{
+  my $self = shift;
+  my $on = shift;
+  if ($on) {
+    my $IPV6_RECVPATHMTU = eval { Socket::IPV6_RECVPATHMTU() } || 43;
+    #if (!$RECVPATHMTU) {
+    #  carp "IPV6_RECVPATHMTU not supported on this platform";
+    #  return 0;
+    #}
+    $self->{"IPV6_RECVPATHMTU"} = 1;
+    setsockopt($self->{"fh"}, $IPPROTO_IPV6, $IPV6_RECVPATHMTU,
+               pack("I*", $self->{'IPV6_RECVPATHMTU'}))
+      or croak "error configuring IPV6_RECVPATHMTU} $!";
+  }
+  else {
+    return $self->{"IPV6_RECVPATHMTU"};
+  }
+}
+
 # Description: allows the module to use milliseconds as returned by
 # the Time::HiRes module
 
@@ -393,7 +561,8 @@ sub ping
       $ping_time,         # When ping began
       );
 
-  croak("Usage: \$p->ping(\$host [, \$timeout [, \$family]])") unless @_ == 2 || @_ == 3 || @_ == 4;
+  $host = $self->{host} if !defined $host and $self->{host};
+  croak("Usage: \$p->ping([ \$host [, \$timeout [, \$family]]])") if @_ > 4 or !$host;
   $timeout = $self->{"timeout"} unless $timeout;
   croak("Timeout must be greater than 0 seconds") if $timeout <= 0;
 
@@ -425,6 +594,9 @@ sub ping
   elsif ($self->{"proto"} eq "icmp") {
     $ret = $self->ping_icmp($ip, $timeout);
   }
+  elsif ($self->{"proto"} eq "icmpv6") {
+    $ret = $self->ping_icmpv6($ip, $timeout);
+  }
   elsif ($self->{"proto"} eq "tcp") {
     $ret = $self->ping_tcp($ip, $timeout);
   }
@@ -444,14 +616,22 @@ sub ping
 sub ping_external {
   my ($self,
       $ip,                # Hash of addr (string), addr_in (packed), family
-      $timeout            # Seconds after which ping times out
+      $timeout,           # Seconds after which ping times out
+      $family
      ) = @_;
+
+  $ip = $self->{host} if !defined $ip and $self->{host};
+  $timeout = $self->{timeout} if !defined $timeout and $self->{timeout};
 
   eval { require Net::Ping::External; }
     or croak('Protocol "external" not supported on your system: Net::Ping::External not found');
-  return Net::Ping::External::ping(ip => $ip, timeout => $timeout);
+  return Net::Ping::External::ping(ip => $ip->{host}, timeout => $timeout,
+                                   family => $family);
 }
 
+# h2ph "asm/socket.h"
+# require "asm/socket.ph";
+use constant SO_BINDTODEVICE  => 25;
 use constant ICMP_ECHOREPLY   => 0; # ICMP packet types
 use constant ICMPv6_ECHOREPLY => 129; # ICMP packet types
 use constant ICMP_UNREACHABLE => 3; # ICMP packet types
@@ -493,6 +673,9 @@ sub ping_icmp
       $from_msg           # ICMP message
       );
 
+  $ip = $self->{host} if !defined $ip and $self->{host};
+  $timeout = $self->{timeout} if !defined $timeout and $self->{timeout};
+
   socket($self->{"fh"}, $ip->{"family"}, SOCK_RAW, $self->{"proto_num"}) ||
     croak("icmp socket error - $!");
 
@@ -506,7 +689,8 @@ sub ping_icmp
       or croak "error binding to device $self->{'device'} $!";
   }
   if ($self->{'tos'}) {
-    setsockopt($self->{"fh"}, IPPROTO_IP, IP_TOS(), pack("I*", $self->{'tos'}))
+    my $proto = $ip->{family} == AF_INET ? IPPROTO_IP : $IPPROTO_IPV6;
+    setsockopt($self->{"fh"}, $proto, IP_TOS, pack("I*", $self->{'tos'}))
       or croak "error configuring tos to $self->{'tos'} $!";
   }
 
@@ -592,6 +776,11 @@ sub ping_icmp
   return $ret;
 }
 
+sub ping_icmpv6
+{
+  shift->ping_icmp(@_);
+}
+
 sub icmp_result {
   my ($self) = @_;
   my $addr = $self->{"from_ip"} || "";
@@ -645,6 +834,9 @@ sub ping_tcp
   my ($ret                # The return value
       );
 
+  $ip = $self->{host} if !defined $ip and $self->{host};
+  $timeout = $self->{timeout} if !defined $timeout and $self->{timeout};
+
   $! = 0;
   $ret = $self -> tcp_connect( $ip, $timeout);
   if (!$self->{"econnrefused"} &&
@@ -662,6 +854,9 @@ sub tcp_connect
       $timeout            # Seconds after which connect times out
       ) = @_;
   my ($saddr);            # Packed IP and Port
+
+  $ip = $self->{host} if !defined $ip and $self->{host};
+  $timeout = $self->{timeout} if !defined $timeout and $self->{timeout};
 
   $saddr = _pack_sockaddr_in($self->{"port_num"}, $ip);
 
@@ -853,9 +1048,10 @@ sub DESTROY {
 # back.  It returns 1 on success, 0 on failure.
 sub tcp_echo
 {
-  my $self = shift;
-  my $timeout = shift;
-  my $pingstring = shift;
+  my ($self, $timeout, $pingstring) = @_;
+
+  $timeout = $self->{timeout} if !defined $timeout and $self->{timeout};
+  $pingstring = $self->{pingstring} if !defined $pingstring and $self->{pingstring};
 
   my $ret = undef;
   my $time = &time();
@@ -904,9 +1100,6 @@ EOM
   return $ret;
 }
 
-
-
-
 # Description: Perform a stream ping.  If the tcp connection isn't
 # already open, it opens it.  It then sends some data and waits for
 # a reply.  It leaves the stream open on exit.
@@ -940,6 +1133,7 @@ sub open
       $family
       ) = @_;
   my $ip;                 # Hash of addr (string), addr_in (packed), family
+  $host = $self->{host} unless defined $host;
 
   if ($family) {
     if ($family =~ $qr_family) {
@@ -1261,8 +1455,9 @@ sub ack
     }
     my $wbits = "";
     my $stop_time = 0;
-    if (my $host = shift) {
-      # Host passed as arg
+    if (my $host = shift or $self->{host}) {
+      # Host passed as arg or as option to new
+      $host = $self->{host} unless defined $host;
       if (exists $self->{"bad"}->{$host}) {
         if (!$self->{"econnrefused"} &&
             $self->{"bad"}->{ $host } &&
@@ -1525,6 +1720,27 @@ sub ntop {
       croak $error;
     }
     return $address;
+}
+
+sub wakeonlan {
+  my ($mac_addr, $host, $port) = @_;
+
+  # use the discard service if $port not passed in
+  if (! defined $host) { $host = '255.255.255.255' }
+  if (! defined $port || $port !~ /^\d+$/ ) { $port = 9 }
+
+  my $sock = new IO::Socket::INET(Proto=>'udp') || return undef;
+
+  my $ip_addr = inet_aton($host);
+  my $sock_addr = sockaddr_in($port, $ip_addr);
+  $mac_addr =~ s/://g;
+  my $packet = pack('C6H*', 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, $mac_addr x 16);
+
+  setsockopt($sock, SOL_SOCKET, SO_BROADCAST, 1);
+  send($sock, $packet, 0, $sock_addr);
+  close ($sock);
+
+  return 1;
 }
 
 ########################################################
@@ -1828,55 +2044,56 @@ This protocol does not require any special privileges.
 
 =over 4
 
-=item Net::Ping->new([$proto [, $def_timeout [, $bytes [, $device [, $tos [, $ttl [, $family ]]]]]]]);
+=item Net::Ping->new([proto, timeout, bytes, device, tos, ttl, family,
+                      host, bind, gateway, retrans, pingstring, source_verify,
+                      econnrefused IPV6_USE_MIN_MTU IPV6_RECVPATHMTU])
 
-Create a new ping object.  All of the parameters are optional.  $proto
-specifies the protocol to use when doing a ping.  The current choices
-are "tcp", "udp", "icmp", "stream", "syn", or "external".
-The default is "tcp".
+Create a new ping object.  All of the parameters are optional and can
+be passed as hash ref.  All options besides the first 7 must be passed
+as hash ref.
 
-If a default timeout ($def_timeout) in seconds is provided, it is used
+C<proto> specifies the protocol to use when doing a ping.  The current
+choices are "tcp", "udp", "icmp", "icmpv6", "stream", "syn", or
+"external".  The default is "tcp".
+
+If a C<timeout> in seconds is provided, it is used
 when a timeout is not given to the ping() method (below).  The timeout
 must be greater than 0 and the default, if not specified, is 5 seconds.
 
-If the number of data bytes ($bytes) is given, that many data bytes
+If the number of data bytes (C<bytes>) is given, that many data bytes
 are included in the ping packet sent to the remote host. The number of
 data bytes is ignored if the protocol is "tcp".  The minimum (and
 default) number of data bytes is 1 if the protocol is "udp" and 0
 otherwise.  The maximum number of data bytes that can be specified is
 1024.
 
-If $device is given, this device is used to bind the source endpoint
+If C<device> is given, this device is used to bind the source endpoint
 before sending the ping packet.  I believe this only works with
 superuser privileges and with udp and icmp protocols at this time.
 
-If $tos is given, this ToS is configured into the socket.
+If <tos> is given, this ToS is configured into the socket.
 
-For icmp, $ttl can be specified to set the TTL of the outgoing packet.
+For icmp, C<ttl> can be specified to set the TTL of the outgoing packet.
 
-=over 4
+Valid C<family> values for IPv4:
 
-Valid $family values for IPv4:
+   4, v4, ip4, ipv4, AF_INET (constant)
 
-=over 4
+Valid C<family> values for IPv6:
 
-4, v4, ip4, ipv4, AF_INET (constant)
+   6, v6, ip6, ipv6, AF_INET6 (constant)
 
-=back
+The C<host> argument implicitly specifies the family if the family
+argument is not given.
 
-=back
+The C<bind> argument specifies the local_addr to bind to.
+By specifying a bind argument you don't need the bind method.
 
-=over 4
+The C<gateway> argument is only valid for IPv6, and requires a IPv6
+address.
 
-Valid values for IPv6:
-
-=over 4
-
-6, v6, ip6, ipv6, AF_INET6 (constant)
-
-=back
-
-=back
+The C<retrans> argument the exponential backoff rate, default 1.2.
+It matches the $def_factor global.
 
 =item $p->ping($host [, $timeout [, $family]]);
 
@@ -1933,10 +2150,44 @@ Deprecated method, but does the same as service_check() method.
 
 =item $p->hires( { 0 | 1 } );
 
-Causes this module to use Time::HiRes module, allowing milliseconds
+With 1 causes this module to use Time::HiRes module, allowing milliseconds
 to be returned by subsequent calls to ping().
 
-This is disabled by default.
+=item $p->time
+
+The current time, hires or not.
+
+=item $p->socket_blocking_mode( $fh, $mode );
+
+Sets or clears the O_NONBLOCK flag on a file handle.
+
+=item $p->IPV6_USE_MIN_MTU
+
+With argument sets the option.
+Without returns the option value.
+
+=item $p->IPV6_RECVPATHMTU
+
+Notify an according IPv6 MTU.
+
+With argument sets the option.
+Without returns the option value.
+
+=item $p->IPV6_HOPLIMIT
+
+With argument sets the option.
+Without returns the option value.
+
+=item $p->IPV6_REACHCONF I<NYI>
+
+Sets ipv6 reachability
+IPV6_REACHCONF was removed in RFC3542. ping6 -R supports it.
+IPV6_REACHCONF requires root/admin permissions.
+
+With argument sets the option.
+Without returns the option value.
+
+Not yet implemented.
 
 =item $p->bind($local_addr);
 
@@ -1952,6 +2203,9 @@ then bind() must be called at most once per object, and (if it is
 called at all) must be called before the first call to ping() for that
 object.
 
+The bind() call can be omitted when specifying the C<bind> option to
+new().
+
 =item $p->open($host);
 
 When you are using the "stream" protocol, this call pre-opens the
@@ -1962,6 +2216,9 @@ first ping.  If you don't call C<open()>, the connection is
 automatically opened the first time C<ping()> is called.
 This call simply does nothing if you are using any protocol other
 than stream.
+
+The $host argument can be omitted when specifying the C<host> option to
+new().
 
 =item $p->ack( [ $host ] );
 
@@ -1982,11 +2239,74 @@ value will be pertaining to that host only.
 This call simply does nothing if you are using any protocol
 other than syn.
 
+When new() had a host option, this host will be used.
+Without host argument, all hosts are scanned.
+
 =item $p->nack( $failed_ack_host );
 
 The reason that host $failed_ack_host did not receive a
 valid ACK.  Useful to find out why when ack( $fail_ack_host )
 returns a false value.
+
+=item $p->ack_unfork($host)
+
+The variant called by ack() with the syn protocol and $syn_forking
+enabled.
+
+=item $p->ping_icmp([$host, $timeout, $family])
+
+The ping() method used with the icmp protocol.
+
+=item $p->ping_icmpv6([$host, $timeout, $family]) I<NYI>
+
+The ping() method used with the icmpv6 protocol.
+
+=item $p->ping_stream([$host, $timeout, $family])
+
+The ping() method used with the stream protocol.
+
+Perform a stream ping.  If the tcp connection isn't
+already open, it opens it.  It then sends some data and waits for
+a reply.  It leaves the stream open on exit.
+
+=item $p->ping_syn([$host, $ip, $start_time, $stop_time])
+
+The ping() method used with the syn protocol.
+Sends a TCP SYN packet to host specified.
+
+=item $p->ping_syn_fork([$host, $timeout, $family])
+
+The ping() method used with the forking syn protocol.
+
+=item $p->ping_tcp([$host, $timeout, $family])
+
+The ping() method used with the tcp protocol.
+
+=item $p->ping_udp([$host, $timeout, $family])
+
+The ping() method used with the udp protocol.
+
+Perform a udp echo ping.  Construct a message of
+at least the one-byte sequence number and any additional data bytes.
+Send the message out and wait for a message to come back.  If we
+get a message, make sure all of its parts match.  If they do, we are
+done.  Otherwise go back and wait for the message until we run out
+of time.  Return the result of our efforts.
+
+=item $p->ping_external([$host, $timeout, $family])
+
+The ping() method used with the external protocol.
+Uses Net::Ping::External to do an external ping.
+
+=item $p->tcp_connect([$ip, $timeout])
+
+Initiates a TCP connection, for a tcp ping.
+
+=item $p->tcp_echo([$ip, $timeout, $pingstring])
+
+Performs a TCP echo.
+It writes the given string to the socket and then reads it
+back.  It returns 1 on success, 0 on failure.
 
 =item $p->close();
 
@@ -2003,6 +2323,24 @@ of calling C<$p-E<gt>service_check(1)> causing a ping to return a successful
 response only if that specific port is accessible.  This function returns
 the value of the port that C<ping()> will connect to.
 
+=item $p->mselect
+
+A select() wrapper that compensates for platform
+peculiarities.
+
+=item $p->ntop
+
+Platform abstraction over inet_ntop()
+
+=item $p->checksum($msg)
+
+Do a checksum on the message.  Basically sum all of
+the short words and fold the high order bits into the low order bits.
+
+=item $p->icmp_result
+
+Returns a list of addr, type, subcode.
+
 =item pingecho($host [, $timeout]);
 
 To provide backward compatibility with the previous version of
@@ -2011,6 +2349,17 @@ functionality as before.  pingecho() uses the tcp protocol.  The
 return values and parameters are the same as described for the ping()
 method.  This subroutine is obsolete and may be removed in a future
 version of Net::Ping.
+
+=item wakeonlan($mac, [$host, [$port]])
+
+Emit the popular wake-on-lan magic udp packet to wake up a local
+device.  See also L<Net::Wake>, but this has the mac address as 1st arg.
+$host should be the local gateway. Without it will broadcast.
+
+Default host: '255.255.255.255'
+Default port: 9
+
+  perl -MNet::Ping=wakeonlan -e'wakeonlan "e0:69:95:35:68:d2"'
 
 =back
 
@@ -2023,9 +2372,10 @@ either udp or icmp.  If many hosts are pinged frequently, you may wish
 to implement a small wait (e.g. 25ms or more) between each ping to
 avoid flooding your network with packets.
 
-The icmp protocol requires that the program be run as root or that it
-be setuid to root.  The other protocols do not require special
-privileges, but not all network devices implement tcp or udp echo.
+The icmp and icmpv6 protocols requires that the program be run as root
+or that it be setuid to root.  The other protocols do not require
+special privileges, but not all network devices implement tcp or udp
+echo.
 
 Local hosts should normally respond to pings within milliseconds.
 However, on a very congested network it may take up to 3 seconds or
@@ -2045,63 +2395,53 @@ kinds of ICMP packets.
 
 =head1 INSTALL
 
-The latest source tree is available via cvs:
+The latest source tree is available via git:
 
-  cvs -z3 -q -d \
-    :pserver:anonymous@cvs.roobik.com.:/usr/local/cvsroot/freeware \
-    checkout Net-Ping
+  git clone https://github.com/rurban/net-ping.git Net-Ping
   cd Net-Ping
 
 The tarball can be created as follows:
 
   perl Makefile.PL ; make ; make dist
 
-The latest Net::Ping release can be found at CPAN:
-
-  $CPAN/modules/by-module/Net/
-
-1) Extract the tarball
-
-  gtar -zxvf Net-Ping-xxxx.tar.gz
-  cd Net-Ping-xxxx
-
-2) Build:
-
-  make realclean
-  perl Makefile.PL
-  make
-  make test
-
-3) Install
-
-  make install
-
-Or install it RPM Style:
-
-  rpm -ta SOURCES/Net-Ping-xxxx.tar.gz
-
-  rpm -ih RPMS/noarch/perl-Net-Ping-xxxx.rpm
+The latest Net::Ping releases are included in cperl and perl5.
 
 =head1 BUGS
 
 For a list of known issues, visit:
 
-https://rt.cpan.org/NoAuth/Bugs.html?Dist=Net-Ping
+L<https://rt.cpan.org/NoAuth/Bugs.html?Dist=Net-Ping>
 
 To report a new bug, visit:
 
-https://rt.cpan.org/NoAuth/ReportBug.html?Queue=Net-Ping
+L<https://rt.cpan.org/NoAuth/ReportBug.html?Queue=Net-Ping> (stale)
+
+or call:
+
+  perlbug
+
+resp.:
+
+  cperlbug
 
 =head1 AUTHORS
 
-  Current maintainer:
+  Current maintainers:
+    perl11 (for cperl, with IPv6 support and more)
+    p5p    (for perl5)
+
+  Previous maintainers:
     bbb@cpan.org (Rob Brown)
+    Steve Peters
 
   External protocol:
     colinm@cpan.org (Colin McMillen)
 
   Stream protocol:
     bronson@trestle.com (Scott Bronson)
+
+  Wake-on-lan:
+    1999-2003 Clinton Wong
 
   Original pingecho():
     karrer@bernina.ethz.ch (Andreas Karrer)
@@ -2111,6 +2451,10 @@ https://rt.cpan.org/NoAuth/ReportBug.html?Queue=Net-Ping
     mose@ns.ccsn.edu (Russell Mosemann)
 
 =head1 COPYRIGHT
+
+Copyright (c) 2016, cPanel Inc.  All rights reserved.
+
+Copyright (c) 2012, Steve Peters.  All rights reserved.
 
 Copyright (c) 2002-2003, Rob Brown.  All rights reserved.
 

@@ -27,4 +27,5 @@ t/500_ping_icmp.t
 t/510_ping_udp.t
 t/520_icmp_ttl.t
 t/600_pod.t
+t/601_pod-coverage.t
 TODO
