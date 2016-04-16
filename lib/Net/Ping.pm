@@ -8,10 +8,12 @@ use vars qw(@ISA @EXPORT $VERSION
             $def_timeout $def_proto $def_factor $def_family
             $max_datasize $pingstring $hires $source_verify $syn_forking);
 use Fcntl qw( F_GETFL F_SETFL O_NONBLOCK );
-use Socket qw( SOCK_DGRAM SOCK_STREAM SOCK_RAW AF_INET PF_INET IPPROTO_TCP SOL_SOCKET SO_ERROR
+use Socket qw( SOCK_DGRAM SOCK_STREAM SOCK_RAW AF_INET PF_INET IPPROTO_TCP
+	       SOL_SOCKET SO_ERROR
                IPPROTO_IP IP_TOS IP_TTL
                inet_ntoa inet_aton getnameinfo NI_NUMERICHOST sockaddr_in );
-use POSIX qw( ENOTCONN ECONNREFUSED ECONNRESET EINPROGRESS EWOULDBLOCK EAGAIN WNOHANG );
+use POSIX qw( ENOTCONN ECONNREFUSED ECONNRESET EINPROGRESS EWOULDBLOCK EAGAIN
+	      WNOHANG );
 use FileHandle;
 use Carp;
 use Time::HiRes;
@@ -20,12 +22,7 @@ use Time::HiRes;
 @EXPORT = qw(pingecho);
 $VERSION = "2.44";
 
-# Constants
-
-my $AF_INET6 = eval { Socket::AF_INET6() };
-my $AF_UNSPEC = eval { Socket::AF_UNSPEC() };
-my $AI_NUMERICHOST = eval { Socket::AI_NUMERICHOST() };
-my $NI_NUMERICHOST = eval { Socket::NI_NUMERICHOST() };
+# Globals
 
 $def_timeout = 5;           # Default timeout to wait for a reply
 $def_proto = "tcp";         # Default protocol to use for pinging
@@ -36,6 +33,13 @@ $max_datasize = 1024;       # Maximum data bytes in a packet
 $pingstring = "pingschwingping!\n";
 $source_verify = 1;         # Default is to verify source endpoint
 $syn_forking = 0;
+
+# Constants
+
+my $AF_INET6  = eval { Socket::AF_INET6() };
+my $AF_UNSPEC = eval { Socket::AF_UNSPEC() };
+my $AI_NUMERICHOST = eval { Socket::AI_NUMERICHOST() };
+my $NI_NUMERICHOST = eval { Socket::NI_NUMERICHOST() };
 my $qr_family = qr/^(?:(?:(:?ip)?v?(?:4|6))|${\AF_INET}|$AF_INET6)$/;
 my $qr_family4 = qr/^(?:(?:(:?ip)?v?4)|${\AF_INET})$/;
 
@@ -61,7 +65,7 @@ if ($^O =~ /Win32/i) {
 
 # h2ph "asm/socket.h"
 # require "asm/socket.ph";
-sub SO_BINDTODEVICE {25;}
+sub SO_BINDTODEVICE () { 25 }
 
 # Description:  The pingecho() subroutine is provided for backward
 # compatibility with the original Net::Ping.  It accepts a host
@@ -238,7 +242,8 @@ sub bind
   my ($self,
       $local_addr         # Name or IP number of local interface
       ) = @_;
-  my ($ip                 # Packed IP number of $local_addr
+  my ($ip,                # Hash of addr (string), addr_in (packed), family
+      $h		  # resolved hash
       );
 
   croak("Usage: \$p->bind(\$local_addr)") unless @_ == 2;
@@ -383,7 +388,7 @@ sub ping
       $timeout,           # Seconds after which ping times out
       $family,            # Address family
       ) = @_;
-  my ($ip,                # Packed IP number of $host
+  my ($ip,                # Hash of addr (string), addr_in (packed), family
       $ret,               # The return value
       $ping_time,         # When ping began
       );
@@ -438,7 +443,7 @@ sub ping
 # Uses Net::Ping::External to do an external ping.
 sub ping_external {
   my ($self,
-      $ip,                # Packed IP number of the host
+      $ip,                # Hash of addr (string), addr_in (packed), family
       $timeout            # Seconds after which ping times out
      ) = @_;
 
@@ -463,7 +468,7 @@ use constant ICMP_PORT        => 0; # No port with ICMP
 sub ping_icmp
 {
   my ($self,
-      $ip,                # Packed IP number of the host
+      $ip,                # Hash of addr (string), addr_in (packed), family
       $timeout            # Seconds after which ping times out
       ) = @_;
 
@@ -589,9 +594,9 @@ sub ping_icmp
 
 sub icmp_result {
   my ($self) = @_;
-  my $ip = $self->{"from_ip"} || "";
-  $ip = "\0\0\0\0" unless 4 == length $ip;
-  return ($self->ntop($ip),($self->{"from_type"} || 0), ($self->{"from_subcode"} || 0));
+  my $addr = $self->{"from_ip"} || "";
+  $addr = "\0\0\0\0" unless 4 == length $addr;
+  return ($self->ntop($addr),($self->{"from_type"} || 0), ($self->{"from_subcode"} || 0));
 }
 
 # Description:  Do a checksum on the message.  Basically sum all of
@@ -634,7 +639,7 @@ sub checksum
 sub ping_tcp
 {
   my ($self,
-      $ip,                # Packed IP number of the host
+      $ip,                # Hash of addr (string), addr_in (packed), family
       $timeout            # Seconds after which ping times out
       ) = @_;
   my ($ret                # The return value
@@ -653,7 +658,7 @@ sub ping_tcp
 sub tcp_connect
 {
   my ($self,
-      $ip,                # Packed IP number of the host
+      $ip,                # Hash of addr (string), addr_in (packed), family
       $timeout            # Seconds after which connect times out
       ) = @_;
   my ($saddr);            # Packed IP and Port
@@ -909,7 +914,7 @@ EOM
 sub ping_stream
 {
   my ($self,
-      $ip,                # Packed IP number of the host
+      $ip,                # Hash of addr (string), addr_in (packed), family
       $timeout            # Seconds after which ping times out
       ) = @_;
 
@@ -934,6 +939,7 @@ sub open
       $timeout,           # Seconds after which open times out
       $family
       ) = @_;
+  my $ip;                 # Hash of addr (string), addr_in (packed), family
 
   if ($family) {
     if ($family =~ $qr_family) {
@@ -949,7 +955,6 @@ sub open
     $self->{"family_local"} = $self->{"family"};
   }
 
-  my ($ip);               # Packed IP number of the host
   $ip = $self->_resolv($host);
   $timeout = $self->{"timeout"} unless $timeout;
 
@@ -974,7 +979,7 @@ use constant UDP_FLAGS => 0; # Nothing special on send or recv
 sub ping_udp
 {
   my ($self,
-      $ip,                # Packed IP number of the host
+      $ip,                # Hash of addr (string), addr_in (packed), family
       $timeout            # Seconds after which ping times out
       ) = @_;
 
@@ -1514,7 +1519,7 @@ sub ntop {
     # Any port will work, even undef, but this will work for now.
     # Socket warns when undef is passed in, but it still works.
     my $port = getservbyname('echo', 'udp');
-    my $sockaddr = sockaddr_in $port, $ip;
+    my $sockaddr = _pack_sockaddr_in($port, $ip);
     my ($error, $address) = getnameinfo($sockaddr, NI_NUMERICHOST);
     if($error) {
       croak $error;
@@ -1657,7 +1662,7 @@ sub _resolv {
   }
 }
 
-sub _pack_sockaddr_in {
+sub _pack_sockaddr_in($$) {
   my ($port,
       $addr,
       ) = @_;
@@ -1669,7 +1674,7 @@ sub _pack_sockaddr_in {
   }
 }
 
-sub _unpack_sockaddr_in {
+sub _unpack_sockaddr_in($;$) {
   my ($addr,
       $family,
       ) = @_;

@@ -1,5 +1,29 @@
 CHANGES
 -------
+2.44  Mar 17 09:35 2013
+        version in cperl since 5.22.2c
+
+       Features
+       - Handle IPv6 addresses and the AF_INET6 family.
+       - Added the optional family argument to most methods.
+         valid values: 6, "v6", "ip6", "ipv6", AF_INET6
+
+       Internals
+       - $ip is now a hash with {addr, addr_in, family} not the addr_in packed IP.
+       - added _resolv replacing inet_aton,
+         _pack_sockaddr_in and _unpack_sockaddr_in replacing sockaddr_in,
+         _inet_ntoa replacing inet_ntoa
+
+2.43  Mon Apr 29 00:23:56 2013 -0300
+        version in perl core since 5.19.9
+        Bugfixes
+        - Handle getprotobyn{ame,umber} not being available
+2.42  Sun May 26 19:08:46 2013 -0700
+        version in perl core since 5.19.1
+        Bugfixes
+        - Stabilize tests
+       Internals
+        - wrap long pod lines
 2.41  Mar 17 09:35 2013
         Bugfixes
         - Windows Vista does not appear to support inet_ntop().  It seems to
