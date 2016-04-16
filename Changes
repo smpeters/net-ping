@@ -10,7 +10,10 @@ CHANGES
        - new can take now named arguments, a hashref.
        - Added the following named arguments to new:
          gateway host bind retrans pingstring source_verify econnrefused
+         IPV6_USE_MIN_MTU IPV6_RECVPATHMTU IPV6_HOPLIMIT
        - Added the wakeonlan method
+       - Improve argument default handling
+       - Added missing documentation
 
        Internals
        - $ip is now a hash with {addr, addr_in, family} not the addr_in packed IP.
